@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-apk:
-    name: Build Universal Android APK
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -34,32 +34,32 @@ jobs:
         run: |
           npm install --legacy-peer-deps
 
-      - name: Build Web Production Assets
+      - name: Build Web Assets
         run: |
           npm run build
 
-      - name: Setup Capacitor Android with Universal SDK Support
+      - name: Setup Capacitor Android
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android --save
           npx cap init "Blentronix Audio" "com.blentronix.audio" --web-dir "dist" || true
           npx cap add android || true
           npx cap sync android
 
-      - name: Force Wide Android Phone Compatibility (minSdk 22, TargetSdk 34)
+      - name: Configure Clean Gradle Properties & Resolve Kotlin Conflicts
         run: |
-          # 1. Resolve Kotlin conflicts in gradle
+          # Enable Jetifier and suppress duplicate Kotlin stdlib
+          echo "android.useAndroidX=true" > android/gradle.properties
+          echo "android.enableJetifier=true" >> android/gradle.properties
           echo "android.jetifier.ignorelist=kotlin-stdlib-jdk7,kotlin-stdlib-jdk8" >> android/gradle.properties
-          
+
+          # Exclude conflicting Kotlin modules in app/build.gradle
           cat << 'EOF' >> android/app/build.gradle
+
           configurations.all {
               exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
               exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
           }
           EOF
-
-          # 2. Force minSdk to 22 (Supports Android 5.1 up to Android 15)
-          sed -i 's/minSdkVersion = .*/minSdkVersion = 22/g' android/variables.gradle || true
-          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 22/g' android/app/build.gradle || true
 
       - name: Build Android Debug APK
         run: |
@@ -67,28 +67,28 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
-      - name: Create Signed Release APK (Solves Android Parse Error)
+      - name: Align & Sign APK (Fixes Android Parsing Problem)
         run: |
-          # Find the compiled APK
-          RAW_APK=$(find android/app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          RAW_APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -n 1)
           echo "Found compiled APK: $RAW_APK"
 
-          # Generate standard debug keystore
-          keytool -genkey -v -keystore release.keystore -alias blentronix -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=Blentronix, OU=Audio, O=App, L=City, S=State, C=US"
+          # Generate standard keystore
+          keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
 
-          # Find Android build-tools apksigner
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
-          echo "Using Android Build Tools: $BUILD_TOOLS_DIR"
+          echo "Using Android Build Tools at: $BUILD_TOOLS_DIR"
 
-          # Zipalign and sign with v1 + v2 + v3 schemes
-          $BUILD_TOOLS_DIR/zipalign -v -p 4 "$RAW_APK" Blentronix-Audio-Aligned.apk
-          $BUILD_TOOLS_DIR/apksigner sign --ks release.keystore --ks-pass pass:password --ks-key-alias blentronix --key-pass pass:password --out Blentronix-Audio-Signed.apk Blentronix-Audio-Aligned.apk
+          # 4-byte zipalign
+          $BUILD_TOOLS_DIR/zipalign -v -p 4 "$RAW_APK" ./Blentronix-Aligned.apk
+
+          # apksigner with v1 + v2 + v3 scheme
+          $BUILD_TOOLS_DIR/apksigner sign --ks debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out ./Blentronix-Audio.apk ./Blentronix-Aligned.apk
 
           # Verify signature
-          $BUILD_TOOLS_DIR/apksigner verify --verbose Blentronix-Audio-Signed.apk
+          $BUILD_TOOLS_DIR/apksigner verify --verbose ./Blentronix-Audio.apk
 
-      - name: Upload Universal Installable APK
+      - name: Upload Final Installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: Blentronix-Audio-Universal-APK
-          path: ./Blentronix-Audio-Signed.apk
+          name: Blentronix-Audio-APK
+          path: ./Blentronix-Audio.apk
